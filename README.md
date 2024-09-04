@@ -14,6 +14,9 @@ The goal of this project is to build a visual language model that monitors a vid
 5. **Data Storage**: Images and captions are saved, along with timestamps, in a CSV file. Only images and captions that show significant scene changes are stored.
 6. **Report Generation** (Future Work): Develop a report generation system that provides detailed activity monitoring reports based on the stored images, timestamps, and captions.
 
+
+![Sample special event detection](https://github.com/shubha07m/VisionLanguageBasedActivityMonitoring/blob/main/sample_event.png)
+
 ## Future Work
 - Develop a report generation feature that uses the stored data to create comprehensive activity monitoring reports for specific durations.
 - Explore integrating real-time notifications for detected events.

@@ -36,3 +36,6 @@ The goal of this project is to build a visual language model that monitors a vid
 - Flask
 - PIL (Pillow)
 - scikit-learn
+- datetime
+- pandas
+- fpdf

@@ -5,6 +5,7 @@ from datetime import datetime
 # Set the file paths
 csv_file_path = '/Users/nemo/Desktop/vlm_for_IoT/images/captions.csv'
 image_folder_path = '/Users/nemo/Desktop/vlm_for_IoT/images/'
+highlight_keywords = ["man", "car", "human", "person", "girl", "woman", "vehicle", "child", "dog", "cat", "bicycle", "motorcycle"]
 
 # Load the CSV data
 df = pd.read_csv(csv_file_path)
@@ -48,7 +49,7 @@ for index, row in df.iterrows():
     pdf.ln(img_height + 5)  # Move cursor after the image
 
     # Check for the word "man" and change text color to red if present
-    if "man" in caption.lower():
+    if any(word in caption.lower() for word in highlight_keywords):
         pdf.set_text_color(255, 0, 0)  # Red color
     else:
         pdf.set_text_color(0, 0, 0)  # Black color

@@ -12,7 +12,8 @@ from generate_caption import generate_caption
 from PIL import Image
 import csv
 from sentence_transformers import SentenceTransformer
-import psutil  # To handle orphan processes
+import psutil
+import numpy as np
 
 # Local Stream URL
 stream_url = "http://192.168.0.20:5000/video_feed"
@@ -31,7 +32,7 @@ resnet = nn.Sequential(*list(resnet.children())[:-1])  # Remove the last layer
 
 # Image transformation for ResNet input
 transform = transforms.Compose([
-    transforms.Resize((224, 224)),
+    transforms.Resize((512,512)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
@@ -54,9 +55,10 @@ def get_caption_embedding(caption):
 
 
 def get_last_saved_info():
-    """Retrieve the last saved image number and timestamp from CSV."""
+    """Retrieve the last saved image number, caption, and image features from CSV."""
     last_image_num = 0
     last_caption = None
+    last_features = None
 
     if os.path.exists(csv_file_path):
         with open(csv_file_path, mode='r') as file:
@@ -66,8 +68,12 @@ def get_last_saved_info():
             if rows:
                 last_image_num = int(rows[-1][0])
                 last_caption = rows[-1][2]
+                last_image_path = os.path.join(save_path, f"{last_image_num}.jpg")
+                if os.path.exists(last_image_path):
+                    last_image = Image.open(last_image_path)
+                    last_features = get_image_feature_vector(last_image)
 
-    return last_image_num, last_caption
+    return last_image_num, last_caption, last_features
 
 
 def terminate_orphan_processes():
@@ -93,49 +99,64 @@ if not os.path.exists(csv_file_path):
         writer = csv.writer(file)
         writer.writerow(["Sequence No", "Timestamp", "Caption"])
 
-# Retrieve the last saved image number and caption
-last_image_num, last_caption = get_last_saved_info()
+# Retrieve the last saved image number, caption, and features
+last_image_num, last_caption, last_features = get_last_saved_info()
 
 # Open the video stream
 cap = cv2.VideoCapture(stream_url)
 
 # Check if the video stream is opened successfully
 if not cap.isOpened():
-    print("Failed to open the video stream.")
-    exit()
+    print("Couldn't read video stream from file. Restarting the process...")
+    restart_process()
 
 # Capture the first frame and generate its caption
 ret, initial_frame = cap.read()
 retry_count = 0  # Initialize retry counter
+restart_attempts = 0  # Initialize restart attempts counter
 
 while not ret:
     retry_count += 1
     if retry_count >= 3:
-        print("Failed to capture the initial frame after 3 retries. Restarting the process...")
+        restart_attempts += 1
+        print(f"Failed to capture the initial frame after {retry_count} retries. Restarting the process (Attempt {restart_attempts}/3)...")
         restart_process()
+
+    if restart_attempts >= 3:
+        print("Maximum restart attempts reached. Exiting the process.")
+        exit()
+
     print("Retrying to capture the initial frame...")
     ret, initial_frame = cap.read()
 
 # Convert initial frame to PIL format and extract its feature vector
 initial_image = Image.fromarray(cv2.cvtColor(initial_frame, cv2.COLOR_BGR2RGB))
-previous_features = get_image_feature_vector(initial_image)
+initial_features = get_image_feature_vector(initial_image)
 
-# If there's no previous caption, generate a new one
-if last_caption is None:
+if last_image_num == 0:
+    # First-time execution: generate and save the first image and caption directly
     initial_filename = os.path.join(save_path, f"{last_image_num + 1}.jpg")
     cv2.imwrite(initial_filename, initial_frame)
-    previous_caption = generate_caption(initial_filename)
-else:
-    previous_caption = last_caption
+    initial_caption = generate_caption(initial_filename)
+    initial_caption_embedding = get_caption_embedding(initial_caption)
 
-previous_caption_embedding = get_caption_embedding(previous_caption)
-print(f"Initial Caption: {previous_caption}")
+    print(f"Initial Caption: {initial_caption}")
 
-# Write the initial caption to CSV if it's new
-if last_caption is None:
+    # Write the initial caption to CSV
     with open(csv_file_path, mode='a', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow([last_image_num + 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), previous_caption])
+        writer.writerow([last_image_num + 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), initial_caption])
+
+    # Initialize for future comparisons
+    previous_features = initial_features
+    previous_caption = initial_caption
+    previous_caption_embedding = initial_caption_embedding
+
+else:
+    # After restart: use last saved image and caption for comparison
+    previous_features = last_features
+    previous_caption = last_caption
+    previous_caption_embedding = get_caption_embedding(last_caption)
 
 # Start the timer
 last_caption_time = time.time()
@@ -145,13 +166,13 @@ print("Video feed is active.")
 # Similarity thresholds (adjust these values)
 image_similarity_threshold = 0.9
 caption_similarity_threshold = 0.9
-image_counter = last_image_num + 1
+image_counter = last_image_num + 2  # Increment counter for next image
 
 while True:
-    # Check if 3 minutes have passed since the last caption was generated
+    # Check if 5 minutes have passed since the last caption was generated
     current_time = time.time()
-    if current_time - last_caption_time >= 180:  # 180 seconds = 3 minutes
-        print("No new caption for 3 minutes. Restarting the process...")
+    if current_time - last_caption_time >= 300:  # 300 seconds = 5 minutes
+        print("No new caption for 5 minutes. Restarting the process...")
         restart_process()
 
     # Capture a frame from the video stream
@@ -165,6 +186,9 @@ while True:
             restart_process()
         continue  # Skip the rest of the loop and retry
     retry_count = 0  # Reset retry counter after successful frame capture
+
+    # Add a small delay to control the frame sampling rate
+    time.sleep(0.1)  # 100ms delay between each frame capture
 
     # Convert current frame to PIL format and extract its feature vector
     current_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
@@ -184,7 +208,7 @@ while True:
         # Calculate the semantic similarity between the current and previous captions
         caption_similarity = cosine_similarity([previous_caption_embedding], [current_caption_embedding])[0][0]
 
-        # Only save if the captions are semantically different
+        # Only save if both the image and caption are sufficiently different from the last saved ones
         if caption_similarity < caption_similarity_threshold:
             # Save the frame with a sequential filename
             filename = os.path.join(save_path, f"{image_counter}.jpg")
@@ -210,12 +234,6 @@ while True:
             image_counter += 1
         else:
             os.remove(temp_filename)
-
-    # Remove the video feed display
-    # Commented out the following lines to stop showing the video feed
-    # key = cv2.waitKey(1) & 0xFF
-    # if key == ord('q'):  # 'q' to quit
-    #     break
 
 # Release the video capture object and close the OpenCV windows
 cap.release()
